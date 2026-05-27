@@ -1,178 +1,154 @@
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <pthread.h>
+#include <string.h>
 #include <unistd.h>
 
-#define LICZBA_CZYTELNIKOW 5
-#define LICZBA_PISARZY 3
+#define PTHREAD_CHECK(operacja)                                                \
+  do {                                                                         \
+    int err = (operacja);                                                      \
+    if (err != 0) {                                                            \
+      fprintf(stderr, "Blad podczas operacji na mutexie: %s\n",                \
+              strerror(err));                                                  \
+      exit(EXIT_FAILURE);                                                      \
+    }                                                                          \
+  } while (0)
+
+#define MUTEX_LOCK(mutex_ptr) PTHREAD_CHECK(pthread_mutex_lock(mutex_ptr))
+#define MUTEX_UNLOCK(mutex_ptr) PTHREAD_CHECK(pthread_mutex_unlock(mutex_ptr))
 
 #define LICZBA_POWTORZEN_CZYTELNIKOW 8
 #define LICZBA_POWTORZEN_PISARZY 5
-int aktywni_czytelnicy = 0;
-int aktywny_pisarz = 0;
 
-int czekajacy_czytelnicy = 0;
-int czekajacy_pisarze = 0;
+int czytelnicy_w_czytelni = 0;
+int in_r = 0;
+int in_w = 0;
+int q_r = 0;
+int q_w = 0;
 
-int kolej_pisarzy = 0;
+pthread_mutex_t bramka;
+pthread_mutex_t mutex_czytelnia;
+pthread_mutex_t mutex_aktywni;
+pthread_mutex_t mutex_log;
 
-pthread_mutex_t mutex;
-pthread_cond_t mozna_czytac;
-pthread_cond_t mozna_pisac;
-
-void *czytelnik(void *arg)
-{
-    int id = *(int *)arg;
-
-    for (int i = 0; i < LICZBA_POWTORZEN_CZYTELNIKOW; i++)
-    {
-        usleep(80000);
-
-        printf("Czytelnik %d chce wejsc do czytelni.\n", id);
-
-        pthread_mutex_lock(&mutex);
-
-        czekajacy_czytelnicy++;
-
-        while (aktywny_pisarz || (kolej_pisarzy && czekajacy_pisarze > 0))
-        {
-            printf("Czytelnik %d czeka. Kolej pisarzy: %d, czekajacy pisarze: %d\n",
-                   id, kolej_pisarzy, czekajacy_pisarze);
-
-            pthread_cond_wait(&mozna_czytac, &mutex);
-        }
-
-        czekajacy_czytelnicy--;
-        aktywni_czytelnicy++;
-
-        printf("Czytelnik %d wchodzi. Aktywni czytelnicy: %d\n",
-               id, aktywni_czytelnicy);
-
-        pthread_mutex_unlock(&mutex);
-
-        usleep(250000);
-
-        pthread_mutex_lock(&mutex);
-
-        aktywni_czytelnicy--;
-
-        printf("Czytelnik %d wychodzi. Aktywni czytelnicy: %d\n",
-               id, aktywni_czytelnicy);
-
-        if (aktywni_czytelnicy == 0)
-        {
-            if (czekajacy_pisarze > 0)
-            {
-                kolej_pisarzy = 1;
-                pthread_cond_signal(&mozna_pisac);
-            }
-            else if (czekajacy_czytelnicy > 0)
-            {
-                kolej_pisarzy = 0;
-                pthread_cond_broadcast(&mozna_czytac);
-            }
-        }
-
-        pthread_mutex_unlock(&mutex);
-    }
-
-    return NULL;
+void zmien_stan(int dq_r, int dq_w, int din_r, int din_w) {
+  MUTEX_LOCK(&mutex_log);
+  q_r += dq_r;
+  q_w += dq_w;
+  in_r += din_r;
+  in_w += din_w;
+  printf("ReaderQ: %d WriterQ: %d [in: R:%d W:%d]\n", q_r, q_w, in_r, in_w);
+  MUTEX_UNLOCK(&mutex_log);
 }
 
-void *pisarz(void *arg)
-{
-    int id = *(int *)arg;
+void *czytelnik(void *arg) {
+  for (int i = 0; i < LICZBA_POWTORZEN_CZYTELNIKOW; i++) {
+    usleep(80000);
 
-    for (int i = 0; i < LICZBA_POWTORZEN_PISARZY; i++)
-    {
-        usleep(150000);
+    zmien_stan(1, 0, 0, 0);
 
-        printf("\n>>> Pisarz %d chce wejsc do czytelni.\n", id);
+    MUTEX_LOCK(&bramka);
+    MUTEX_LOCK(&mutex_aktywni);
 
-        pthread_mutex_lock(&mutex);
-
-        czekajacy_pisarze++;
-
-        while (aktywny_pisarz ||
-               aktywni_czytelnicy > 0 ||
-               (!kolej_pisarzy && czekajacy_czytelnicy > 0))
-        {
-            printf(">>> Pisarz %d czeka. Kolej pisarzy: %d, aktywni czytelnicy: %d, czekajacy czytelnicy: %d\n",
-                   id, kolej_pisarzy, aktywni_czytelnicy, czekajacy_czytelnicy);
-
-            pthread_cond_wait(&mozna_pisac, &mutex);
-        }
-
-        czekajacy_pisarze--;
-        aktywny_pisarz = 1;
-
-        printf("\n>>> Pisarz %d wchodzi i PISZE. Czekajacy pisarze: %d\n",
-               id, czekajacy_pisarze);
-
-        pthread_mutex_unlock(&mutex);
-
-        usleep(500000);
-
-        pthread_mutex_lock(&mutex);
-
-        aktywny_pisarz = 0;
-
-        printf("\n>>> Pisarz %d wychodzi z czytelni.\n", id);
-
-        if (czekajacy_czytelnicy > 0)
-        {
-            kolej_pisarzy = 0;
-            pthread_cond_broadcast(&mozna_czytac);
-        }
-        else if (czekajacy_pisarze > 0)
-        {
-            kolej_pisarzy = 1;
-            pthread_cond_signal(&mozna_pisac);
-        }
-
-        pthread_mutex_unlock(&mutex);
+    czytelnicy_w_czytelni++;
+    if (czytelnicy_w_czytelni == 1) {
+      MUTEX_LOCK(&mutex_czytelnia);
     }
 
-    return NULL;
+    MUTEX_UNLOCK(&mutex_aktywni);
+    MUTEX_UNLOCK(&bramka);
+
+    zmien_stan(-1, 0, 1, 0);
+
+    usleep(250000);
+
+    MUTEX_LOCK(&mutex_aktywni);
+    czytelnicy_w_czytelni--;
+    zmien_stan(0, 0, -1, 0);
+    if (czytelnicy_w_czytelni == 0) {
+      MUTEX_UNLOCK(&mutex_czytelnia);
+    }
+    MUTEX_UNLOCK(&mutex_aktywni);
+  }
+  return NULL;
 }
 
-int main()
-{
-    pthread_t czytelnicy[LICZBA_CZYTELNIKOW];
-    pthread_t pisarze[LICZBA_PISARZY];
+void *pisarz(void *arg) {
+  for (int i = 0; i < LICZBA_POWTORZEN_PISARZY; i++) {
+    usleep(150000);
 
-    int id_czytelnikow[LICZBA_CZYTELNIKOW];
-    int id_pisarzy[LICZBA_PISARZY];
+    zmien_stan(0, 1, 0, 0);
 
-    pthread_mutex_init(&mutex, NULL);
-    pthread_cond_init(&mozna_czytac, NULL);
-    pthread_cond_init(&mozna_pisac, NULL);
+    MUTEX_LOCK(&bramka);
+    MUTEX_LOCK(&mutex_czytelnia);
+    MUTEX_UNLOCK(&bramka);
 
-    for (int i = 0; i < LICZBA_CZYTELNIKOW; i++)
-    {
-        id_czytelnikow[i] = i + 1;
-        pthread_create(&czytelnicy[i], NULL, czytelnik, &id_czytelnikow[i]);
+    zmien_stan(0, -1, 0, 1);
+
+    usleep(500000);
+
+    zmien_stan(0, 0, 0, -1);
+    MUTEX_UNLOCK(&mutex_czytelnia);
+  }
+  return NULL;
+}
+
+int main(int argc, char *argv[]) {
+  int czytelnicy_suma = 5;
+  int pisarze_suma = 3;
+
+  if (argc == 3) {
+    czytelnicy_suma = atoi(argv[1]);
+    pisarze_suma = atoi(argv[2]);
+    if (czytelnicy_suma <= 0 || pisarze_suma <= 0) {
+      fprintf(stderr, "Liczba watkow musi byc wieksza od 0.\n");
+      return EXIT_FAILURE;
     }
+  }
 
-    for (int i = 0; i < LICZBA_PISARZY; i++)
-    {
-        id_pisarzy[i] = i + 1;
-        pthread_create(&pisarze[i], NULL, pisarz, &id_pisarzy[i]);
-    }
+  pthread_t *czytelnicy = malloc(czytelnicy_suma * sizeof(pthread_t));
+  pthread_t *pisarze = malloc(pisarze_suma * sizeof(pthread_t));
+  int *id_czytelnikow = malloc(czytelnicy_suma * sizeof(int));
+  int *id_pisarzy = malloc(pisarze_suma * sizeof(int));
 
-    for (int i = 0; i < LICZBA_CZYTELNIKOW; i++)
-    {
-        pthread_join(czytelnicy[i], NULL);
-    }
+  if (!czytelnicy || !pisarze || !id_czytelnikow || !id_pisarzy) {
+    fprintf(stderr, "FATAL: Brak pamieci.\n");
+    exit(EXIT_FAILURE);
+  }
 
-    for (int i = 0; i < LICZBA_PISARZY; i++)
-    {
-        pthread_join(pisarze[i], NULL);
-    }
+  PTHREAD_CHECK(pthread_mutex_init(&bramka, NULL));
+  PTHREAD_CHECK(pthread_mutex_init(&mutex_aktywni, NULL));
+  PTHREAD_CHECK(pthread_mutex_init(&mutex_czytelnia, NULL));
+  PTHREAD_CHECK(pthread_mutex_init(&mutex_log, NULL));
 
-    pthread_cond_destroy(&mozna_czytac);
-    pthread_cond_destroy(&mozna_pisac);
-    pthread_mutex_destroy(&mutex);
+  for (int i = 0; i < czytelnicy_suma; i++) {
+    id_czytelnikow[i] = i + 1;
+    PTHREAD_CHECK(
+        pthread_create(&czytelnicy[i], NULL, czytelnik, &id_czytelnikow[i]));
+  }
 
-    return 0;
+  for (int i = 0; i < pisarze_suma; i++) {
+    id_pisarzy[i] = i + 1;
+    PTHREAD_CHECK(pthread_create(&pisarze[i], NULL, pisarz, &id_pisarzy[i]));
+  }
+
+  for (int i = 0; i < czytelnicy_suma; i++) {
+    PTHREAD_CHECK(pthread_join(czytelnicy[i], NULL));
+  }
+
+  for (int i = 0; i < pisarze_suma; i++) {
+    PTHREAD_CHECK(pthread_join(pisarze[i], NULL));
+  }
+
+  free(czytelnicy);
+  free(pisarze);
+  free(id_czytelnikow);
+  free(id_pisarzy);
+
+  PTHREAD_CHECK(pthread_mutex_destroy(&bramka));
+  PTHREAD_CHECK(pthread_mutex_destroy(&mutex_aktywni));
+  PTHREAD_CHECK(pthread_mutex_destroy(&mutex_czytelnia));
+  PTHREAD_CHECK(pthread_mutex_destroy(&mutex_log));
+
+  return 0;
 }
