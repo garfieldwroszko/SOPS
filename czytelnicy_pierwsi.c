@@ -1,125 +1,134 @@
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <pthread.h>
+#include <string.h>
 #include <unistd.h>
 
-#define LICZBA_CZYTELNIKOW 8
-#define LICZBA_PISARZY 1
-#define LICZBA_POWTORZEN_CZYTELNIKOW 20
-#define LICZBA_POWTORZEN_PISARZY 3
+#define PTHREAD_CHECK(operacja)                                                \
+  do {                                                                         \
+    int err = (operacja);                                                      \
+    if (err != 0) {                                                            \
+      fprintf(stderr, "Blad podczas operacji na mutexie: %s\n",                \
+              strerror(err));                                                  \
+      exit(EXIT_FAILURE);                                                      \
+    }                                                                          \
+  } while (0)
 
-int liczba_czytelnikow = 0;
+#define MUTEX_LOCK(mutex_ptr) PTHREAD_CHECK(pthread_mutex_lock(mutex_ptr))
+#define MUTEX_UNLOCK(mutex_ptr) PTHREAD_CHECK(pthread_mutex_unlock(mutex_ptr))
 
-pthread_mutex_t mutex_licznik;
-pthread_mutex_t mutex_czytelnia;
+#define LICZBA_POWTORZEN_CZYTELNIKOW 8
+#define LICZBA_POWTORZEN_PISARZY 5
 
-void *czytelnik(void *arg)
-{
-    int id = *(int *)arg;
+int in_r = 0, in_w = 0, q_r = 0, q_w = 0;
 
-    for (int i = 0; i < LICZBA_POWTORZEN_CZYTELNIKOW; i++)
-    {
-        printf("Czytelnik %d chce wejsc do czytelni.\n", id);
+pthread_mutex_t monitor_mutex;
+pthread_cond_t mozna_czytac;
+pthread_cond_t mozna_pisac;
 
-        pthread_mutex_lock(&mutex_licznik);
-
-        liczba_czytelnikow++;
-
-        if (liczba_czytelnikow == 1)
-        {
-            pthread_mutex_lock(&mutex_czytelnia);
-        }
-
-        printf("Czytelnik %d wchodzi. Liczba czytelnikow: %d\n",
-               id, liczba_czytelnikow);
-
-        pthread_mutex_unlock(&mutex_licznik);
-
-        usleep(300000 + (id * 30000)); // symulacja czytania: ok. 0.3-0.54 s
-
-        pthread_mutex_lock(&mutex_licznik);
-
-        liczba_czytelnikow--;
-
-        printf("Czytelnik %d wychodzi. Liczba czytelnikow: %d\n",
-               id, liczba_czytelnikow);
-
-        if (liczba_czytelnikow == 0)
-        {
-            pthread_mutex_unlock(&mutex_czytelnia);
-        }
-
-        pthread_mutex_unlock(&mutex_licznik);
-
-        usleep(20000); // bardzo krotka przerwa przed ponownym wejsciem
-    }
-
-    return NULL;
+void drukuj_stan() {
+  printf("ReaderQ: %d WriterQ: %d [in: R:%d W:%d]\n", q_r, q_w, in_r, in_w);
 }
 
-void *pisarz(void *arg)
-{
-    int id = *(int *)arg;
+void *czytelnik(void *arg) {
+  for (int i = 0; i < LICZBA_POWTORZEN_CZYTELNIKOW; i++) {
+    usleep(80000);
 
-    sleep(1); // pisarz pojawia sie, gdy czytelnicy juz dzialaja
+    MUTEX_LOCK(&monitor_mutex);
+    q_r++;
+    drukuj_stan();
 
-    for (int i = 0; i < LICZBA_POWTORZEN_PISARZY; i++)
-    {
-        printf("\n>>> Pisarz %d chce wejsc do czytelni.\n", id);
-
-        pthread_mutex_lock(&mutex_czytelnia);
-
-        printf("\n>>> Pisarz %d PISZE.\n", id);
-
-        sleep(1);
-
-        printf("\n>>> Pisarz %d wychodzi z czytelni.\n", id);
-
-        pthread_mutex_unlock(&mutex_czytelnia);
-
-        sleep(1);
+    while (in_w > 0) {
+      PTHREAD_CHECK(pthread_cond_wait(&mozna_czytac, &monitor_mutex));
     }
 
-    return NULL;
+    q_r--;
+    in_r++;
+    drukuj_stan();
+    MUTEX_UNLOCK(&monitor_mutex);
+
+    usleep(250000);
+
+    MUTEX_LOCK(&monitor_mutex);
+    in_r--;
+    drukuj_stan();
+
+    if (in_r == 0) {
+      PTHREAD_CHECK(pthread_cond_signal(&mozna_pisac));
+    }
+    MUTEX_UNLOCK(&monitor_mutex);
+  }
+  return NULL;
 }
 
-int main()
-{
-    pthread_t czytelnicy[LICZBA_CZYTELNIKOW];
-    pthread_t pisarze[LICZBA_PISARZY];
+void *pisarz(void *arg) {
+  for (int i = 0; i < LICZBA_POWTORZEN_PISARZY; i++) {
+    usleep(150000);
 
-    int id_czytelnikow[LICZBA_CZYTELNIKOW];
-    int id_pisarzy[LICZBA_PISARZY];
+    MUTEX_LOCK(&monitor_mutex);
+    q_w++;
+    drukuj_stan();
 
-    pthread_mutex_init(&mutex_licznik, NULL);
-    pthread_mutex_init(&mutex_czytelnia, NULL);
-
-    for (int i = 0; i < LICZBA_CZYTELNIKOW; i++)
-    {
-        id_czytelnikow[i] = i + 1;
-        pthread_create(&czytelnicy[i], NULL, czytelnik, &id_czytelnikow[i]);
-
-        usleep(50000); // male opoznienie startu kolejnych czytelnikow
+    while (in_w > 0 || in_r > 0 || q_r > 0) {
+      PTHREAD_CHECK(pthread_cond_wait(&mozna_pisac, &monitor_mutex));
     }
 
-    for (int i = 0; i < LICZBA_PISARZY; i++)
-    {
-        id_pisarzy[i] = i + 1;
-        pthread_create(&pisarze[i], NULL, pisarz, &id_pisarzy[i]);
+    q_w--;
+    in_w = 1;
+    drukuj_stan();
+    MUTEX_UNLOCK(&monitor_mutex);
+
+    usleep(500000);
+
+    MUTEX_LOCK(&monitor_mutex);
+    in_w = 0;
+    drukuj_stan();
+
+    if (q_r > 0) {
+      PTHREAD_CHECK(pthread_cond_broadcast(&mozna_czytac));
+    } else if (q_w > 0) {
+      PTHREAD_CHECK(pthread_cond_signal(&mozna_pisac));
     }
+    MUTEX_UNLOCK(&monitor_mutex);
+  }
+  return NULL;
+}
 
-    for (int i = 0; i < LICZBA_CZYTELNIKOW; i++)
-    {
-        pthread_join(czytelnicy[i], NULL);
-    }
+int main(int argc, char *argv[]) {
+  int czytelnicy_suma = 5;
+  int pisarze_suma = 3;
 
-    for (int i = 0; i < LICZBA_PISARZY; i++)
-    {
-        pthread_join(pisarze[i], NULL);
-    }
+  if (argc == 3) {
+    czytelnicy_suma = atoi(argv[1]);
+    pisarze_suma = atoi(argv[2]);
+    if (czytelnicy_suma <= 0 || pisarze_suma <= 0)
+      exit(EXIT_FAILURE);
+  }
 
-    pthread_mutex_destroy(&mutex_licznik);
-    pthread_mutex_destroy(&mutex_czytelnia);
+  pthread_t *czytelnicy = malloc(czytelnicy_suma * sizeof(pthread_t));
+  pthread_t *pisarze = malloc(pisarze_suma * sizeof(pthread_t));
+  if (!czytelnicy || !pisarze)
+    exit(EXIT_FAILURE);
 
-    return 0;
+  PTHREAD_CHECK(pthread_mutex_init(&monitor_mutex, NULL));
+  PTHREAD_CHECK(pthread_cond_init(&mozna_czytac, NULL));
+  PTHREAD_CHECK(pthread_cond_init(&mozna_pisac, NULL));
+
+  for (int i = 0; i < czytelnicy_suma; i++)
+    PTHREAD_CHECK(pthread_create(&czytelnicy[i], NULL, czytelnik, NULL));
+  for (int i = 0; i < pisarze_suma; i++)
+    PTHREAD_CHECK(pthread_create(&pisarze[i], NULL, pisarz, NULL));
+
+  for (int i = 0; i < czytelnicy_suma; i++)
+    PTHREAD_CHECK(pthread_join(czytelnicy[i], NULL));
+  for (int i = 0; i < pisarze_suma; i++)
+    PTHREAD_CHECK(pthread_join(pisarze[i], NULL));
+
+  free(czytelnicy);
+  free(pisarze);
+  PTHREAD_CHECK(pthread_mutex_destroy(&monitor_mutex));
+  PTHREAD_CHECK(pthread_cond_destroy(&mozna_czytac));
+  PTHREAD_CHECK(pthread_cond_destroy(&mozna_pisac));
+
+  return 0;
 }
