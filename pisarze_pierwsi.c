@@ -4,7 +4,6 @@
 #include <string.h>
 #include <unistd.h>
 
-// Makro do obslugi bledow funkcji pthreads
 #define PTHREAD_CHECK(operacja)                                                \
   do {                                                                         \
     int err = (operacja);                                                      \
@@ -21,15 +20,12 @@
 #define LICZBA_POWTORZEN_CZYTELNIKOW 8
 #define LICZBA_POWTORZEN_PISARZY 5
 
-// Zmienne stanu monitora
 int in_r = 0, in_w = 0, q_r = 0, q_w = 0;
 
-// Elementy monitora
 pthread_mutex_t monitor_mutex;
 pthread_cond_t mozna_czytac;
 pthread_cond_t mozna_pisac;
 
-// Funkcja odpowiedzialna za formatowane wypisywanie stanu algorytmu
 void drukuj_stan() {
   printf("ReaderQ: %d WriterQ: %d [in: R:%d W:%d]\n", q_r, q_w, in_r, in_w);
 }
@@ -39,29 +35,24 @@ void *czytelnik(void *arg) {
     usleep(80000);
 
     MUTEX_LOCK(&monitor_mutex);
-    q_r++; // Dodanie do kolejki oczekujacych
+    q_r++;
     drukuj_stan();
 
-    // Problem Czytelnikow i Pisarzy II: Faworyzowanie pisarzy.
-    // Czytelnik ustepuje pierwszenstwa kazdemu pisarzowi oczekujacemu w kolejce
-    // (q_w > 0).
     while (in_w > 0 || q_w > 0) {
       PTHREAD_CHECK(pthread_cond_wait(&mozna_czytac, &monitor_mutex));
     }
 
     q_r--;
-    in_r++; // Wejscie do czytelni
+    in_r++;
     drukuj_stan();
     MUTEX_UNLOCK(&monitor_mutex);
 
-    // Pobyt w czytelni - czytanie
     usleep(250000);
 
     MUTEX_LOCK(&monitor_mutex);
-    in_r--; // Opuszczenie czytelni
+    in_r--;
     drukuj_stan();
 
-    // Ostatni wychodzacy czytelnik wybudza pisarza
     if (in_r == 0) {
       PTHREAD_CHECK(pthread_cond_signal(&mozna_pisac));
     }
@@ -75,33 +66,27 @@ void *pisarz(void *arg) {
     usleep(150000);
 
     MUTEX_LOCK(&monitor_mutex);
-    q_w++; // Dodanie do kolejki oczekujacych
+    q_w++;
     drukuj_stan();
 
-    // Pisarz czeka wylacznie, gdy czytelnia jest fizycznie zajeta (in_w > 0 lub
-    // in_r > 0)
     while (in_w > 0 || in_r > 0) {
       PTHREAD_CHECK(pthread_cond_wait(&mozna_pisac, &monitor_mutex));
     }
 
     q_w--;
-    in_w = 1; // Wejscie do czytelni (blokada wylaczna)
+    in_w = 1;
     drukuj_stan();
     MUTEX_UNLOCK(&monitor_mutex);
 
-    // Pobyt w czytelni - pisanie
     usleep(500000);
 
     MUTEX_LOCK(&monitor_mutex);
-    in_w = 0; // Opuszczenie czytelni
+    in_w = 0;
     drukuj_stan();
 
-    // Wybudzanie zgodne z priorytetem: w pierwszej kolejnosci sygnal dla innego
-    // pisarza
     if (q_w > 0) {
       PTHREAD_CHECK(pthread_cond_signal(&mozna_pisac));
     } else {
-      // Dopuszczenie czytelnikow tylko w przypadku braku oczekujacych pisarzy
       PTHREAD_CHECK(pthread_cond_broadcast(&mozna_czytac));
     }
     MUTEX_UNLOCK(&monitor_mutex);
@@ -110,18 +95,49 @@ void *pisarz(void *arg) {
 }
 
 int main(int argc, char *argv[]) {
-  int czytelnicy_suma = 5;
+  int czytelnicy_suma = 5; // Domyslne wartosci
   int pisarze_suma = 3;
+  int opt;
 
-  if (argc == 3) {
-    czytelnicy_suma = atoi(argv[1]);
-    pisarze_suma = atoi(argv[2]);
-    if (czytelnicy_suma <= 0 || pisarze_suma <= 0)
+  while ((opt = getopt(argc, argv, "r:w:h")) != -1) {
+    switch (opt) {
+    case 'r':
+      czytelnicy_suma = atoi(optarg);
+      break;
+    case 'w':
+      pisarze_suma = atoi(optarg);
+      break;
+    case 'h':
+      printf("Uzycie: %s [-r liczba_czytelnikow] [-w liczba_pisarzy]\n\n",
+             argv[0]);
+      printf("Opcje:\n");
+      printf(
+          "  -r <liczba>   Ustawia liczbe watkow czytelnikow (domyslnie: 5)\n");
+      printf("  -w <liczba>   Ustawia liczbe watkow pisarzy (domyslnie: 3)\n");
+      printf("  -h            Wyswietla ten komunikat pomocy\n");
+      exit(EXIT_SUCCESS);
+    default:
+      fprintf(stderr, "Sprobuj '%s -h' aby uzyskac wiecej informacji.\n",
+              argv[0]);
       exit(EXIT_FAILURE);
+    }
+  }
+
+  if (optind < argc) {
+    fprintf(stderr, "FATAL: Podano nieprawidlowe argumenty!\n");
+    fprintf(stderr, "Sprobuj '%s -h' aby uzyskac wiecej informacji.\n",
+            argv[0]);
+    exit(EXIT_FAILURE);
+  }
+
+  if (czytelnicy_suma <= 0 || pisarze_suma <= 0) {
+    fprintf(stderr, "Argumenty musza byc liczbami wiekszymi od 0!\n");
+    exit(EXIT_FAILURE);
   }
 
   pthread_t *czytelnicy = malloc(czytelnicy_suma * sizeof(pthread_t));
   pthread_t *pisarze = malloc(pisarze_suma * sizeof(pthread_t));
+
   if (!czytelnicy || !pisarze)
     exit(EXIT_FAILURE);
 
