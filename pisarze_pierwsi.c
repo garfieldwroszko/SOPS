@@ -95,18 +95,49 @@ void *pisarz(void *arg) {
 }
 
 int main(int argc, char *argv[]) {
-  int czytelnicy_suma = 5;
+  int czytelnicy_suma = 5; // Domyslne wartosci
   int pisarze_suma = 3;
+  int opt;
 
-  if (argc == 3) {
-    czytelnicy_suma = atoi(argv[1]);
-    pisarze_suma = atoi(argv[2]);
-    if (czytelnicy_suma <= 0 || pisarze_suma <= 0)
+  while ((opt = getopt(argc, argv, "r:w:h")) != -1) {
+    switch (opt) {
+    case 'r':
+      czytelnicy_suma = atoi(optarg);
+      break;
+    case 'w':
+      pisarze_suma = atoi(optarg);
+      break;
+    case 'h':
+      printf("Uzycie: %s [-r liczba_czytelnikow] [-w liczba_pisarzy]\n\n",
+             argv[0]);
+      printf("Opcje:\n");
+      printf(
+          "  -r <liczba>   Ustawia liczbe watkow czytelnikow (domyslnie: 5)\n");
+      printf("  -w <liczba>   Ustawia liczbe watkow pisarzy (domyslnie: 3)\n");
+      printf("  -h            Wyswietla ten komunikat pomocy\n");
+      exit(EXIT_SUCCESS);
+    default:
+      fprintf(stderr, "Sprobuj '%s -h' aby uzyskac wiecej informacji.\n",
+              argv[0]);
       exit(EXIT_FAILURE);
+    }
+  }
+
+  if (optind < argc) {
+    fprintf(stderr, "FATAL: Podano nieprawidlowe argumenty!\n");
+    fprintf(stderr, "Sprobuj '%s -h' aby uzyskac wiecej informacji.\n",
+            argv[0]);
+    exit(EXIT_FAILURE);
+  }
+
+  if (czytelnicy_suma <= 0 || pisarze_suma <= 0) {
+    fprintf(stderr, "Argumenty musza byc liczbami wiekszymi od 0!\n");
+    exit(EXIT_FAILURE);
   }
 
   pthread_t *czytelnicy = malloc(czytelnicy_suma * sizeof(pthread_t));
   pthread_t *pisarze = malloc(pisarze_suma * sizeof(pthread_t));
+
   if (!czytelnicy || !pisarze)
     exit(EXIT_FAILURE);
 
