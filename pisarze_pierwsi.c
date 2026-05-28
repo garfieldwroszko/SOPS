@@ -4,6 +4,7 @@
 #include <string.h>
 #include <unistd.h>
 
+// Makro do obslugi bledow funkcji pthreads
 #define PTHREAD_CHECK(operacja)                                                \
   do {                                                                         \
     int err = (operacja);                                                      \
@@ -20,12 +21,15 @@
 #define LICZBA_POWTORZEN_CZYTELNIKOW 8
 #define LICZBA_POWTORZEN_PISARZY 5
 
+// Zmienne stanu monitora
 int in_r = 0, in_w = 0, q_r = 0, q_w = 0;
 
+// Elementy monitora
 pthread_mutex_t monitor_mutex;
 pthread_cond_t mozna_czytac;
 pthread_cond_t mozna_pisac;
 
+// Funkcja odpowiedzialna za formatowane wypisywanie stanu algorytmu
 void drukuj_stan() {
   printf("ReaderQ: %d WriterQ: %d [in: R:%d W:%d]\n", q_r, q_w, in_r, in_w);
 }
@@ -35,24 +39,28 @@ void *czytelnik(void *arg) {
     usleep(80000);
 
     MUTEX_LOCK(&monitor_mutex);
-    q_r++;
+    q_r++; // Dodanie do kolejki oczekujacych
     drukuj_stan();
 
+    // Faworyzowanie pisarzy.
+    // Czytelnik ustepuje pierwszenstwa kazdemu pisarzowi oczekujacemu w kolejce
     while (in_w > 0 || q_w > 0) {
       PTHREAD_CHECK(pthread_cond_wait(&mozna_czytac, &monitor_mutex));
     }
 
     q_r--;
-    in_r++;
+    in_r++; // Wejscie do czytelni
     drukuj_stan();
     MUTEX_UNLOCK(&monitor_mutex);
 
+    // Pobyt w czytelni - czytanie
     usleep(250000);
 
     MUTEX_LOCK(&monitor_mutex);
-    in_r--;
+    in_r--; // Opuszczenie czytelni
     drukuj_stan();
 
+    // Ostatni wychodzacy czytelnik wybudza pisarza
     if (in_r == 0) {
       PTHREAD_CHECK(pthread_cond_signal(&mozna_pisac));
     }
@@ -66,27 +74,32 @@ void *pisarz(void *arg) {
     usleep(150000);
 
     MUTEX_LOCK(&monitor_mutex);
-    q_w++;
+    q_w++; // Dodanie do kolejki oczekujacych
     drukuj_stan();
 
+    // Pisarz czeka wylacznie, gdy czytelnia jest fizycznie zajeta
     while (in_w > 0 || in_r > 0) {
       PTHREAD_CHECK(pthread_cond_wait(&mozna_pisac, &monitor_mutex));
     }
 
     q_w--;
-    in_w = 1;
+    in_w = 1; // Wejscie do czytelni (blokada wylaczna)
     drukuj_stan();
     MUTEX_UNLOCK(&monitor_mutex);
 
+    // Pobyt w czytelni - pisanie
     usleep(500000);
 
     MUTEX_LOCK(&monitor_mutex);
-    in_w = 0;
+    in_w = 0; // Opuszczenie czytelni
     drukuj_stan();
 
+    // Wybudzanie zgodne z priorytetem, w pierwszej kolejnosci sygnal dla innego
+    // pisarza
     if (q_w > 0) {
       PTHREAD_CHECK(pthread_cond_signal(&mozna_pisac));
     } else {
+      // Dopuszczenie czytelnikow tylko w przypadku braku oczekujacych pisarzy
       PTHREAD_CHECK(pthread_cond_broadcast(&mozna_czytac));
     }
     MUTEX_UNLOCK(&monitor_mutex);
@@ -99,6 +112,7 @@ int main(int argc, char *argv[]) {
   int pisarze_suma = 3;
   int opt;
 
+  // Parsowanie argumentow z linii polecen
   while ((opt = getopt(argc, argv, "r:w:h")) != -1) {
     switch (opt) {
     case 'r':
