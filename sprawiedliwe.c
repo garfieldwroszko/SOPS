@@ -4,6 +4,7 @@
 #include <string.h>
 #include <unistd.h>
 
+// Makro do obslugi bledow funkcji pthreads
 #define PTHREAD_CHECK(operacja)                                                \
   do {                                                                         \
     int err = (operacja);                                                      \
@@ -20,17 +21,23 @@
 #define LICZBA_POWTORZEN_CZYTELNIKOW 8
 #define LICZBA_POWTORZEN_PISARZY 5
 
+// Zmienna weryfikujaca ilosc czytelnikow w czytelni
 int czytelnicy_w_czytelni = 0;
+
+// Zmienne pomocnicze sluzace wylacznie do logowania stanu
 int in_r = 0;
 int in_w = 0;
 int q_r = 0;
 int q_w = 0;
 
-pthread_mutex_t bramka;
-pthread_mutex_t mutex_czytelnia;
-pthread_mutex_t mutex_aktywni;
-pthread_mutex_t mutex_log;
+// Mutexy realizujace algorytm zapobiegajacy zaglodzeniu
+pthread_mutex_t bramka;          // Bramka  wymuszajaca kolejkowanie
+pthread_mutex_t mutex_czytelnia; // Mutex chroniacy wejscie do czytelni
+pthread_mutex_t
+    mutex_aktywni;         // Mutex chroniacy wspoldzielony licznik czytelnikow
+pthread_mutex_t mutex_log; // Mutex logowania
 
+// Funkcja zmieniajace wartosci logowania i wypisywanie stanu
 void zmien_stan(int dq_r, int dq_w, int din_r, int din_w) {
   MUTEX_LOCK(&mutex_log);
   q_r += dq_r;
@@ -45,26 +52,30 @@ void *czytelnik(void *arg) {
   for (int i = 0; i < LICZBA_POWTORZEN_CZYTELNIKOW; i++) {
     usleep(80000);
 
-    zmien_stan(1, 0, 0, 0);
+    zmien_stan(1, 0, 0, 0); // Rejestracja checi wejscia
 
-    MUTEX_LOCK(&bramka);
+    MUTEX_LOCK(&bramka); // Przejscie przez bramke (zapobiega nieskonczonemu
+                         // naplywowi czytelnikow)
     MUTEX_LOCK(&mutex_aktywni);
 
     czytelnicy_w_czytelni++;
+    // Pierwszy czytelnik wchodzacy do czytelni blokuje dostep pisarzom
     if (czytelnicy_w_czytelni == 1) {
       MUTEX_LOCK(&mutex_czytelnia);
     }
 
     MUTEX_UNLOCK(&mutex_aktywni);
-    MUTEX_UNLOCK(&bramka);
+    MUTEX_UNLOCK(&bramka); // Zwolnienie bramki dla kolejnych watkow
 
     zmien_stan(-1, 0, 1, 0);
 
+    // Pobyt w czytelni - czytanie
     usleep(250000);
 
     MUTEX_LOCK(&mutex_aktywni);
     czytelnicy_w_czytelni--;
     zmien_stan(0, 0, -1, 0);
+    // Ostatni wychodzacy czytelnik zwalnia glowna blokade dla pisarzy
     if (czytelnicy_w_czytelni == 0) {
       MUTEX_UNLOCK(&mutex_czytelnia);
     }
@@ -77,18 +88,21 @@ void *pisarz(void *arg) {
   for (int i = 0; i < LICZBA_POWTORZEN_PISARZY; i++) {
     usleep(150000);
 
-    zmien_stan(0, 1, 0, 0);
+    zmien_stan(0, 1, 0, 0); // Rejestracja checi wejscia
 
-    MUTEX_LOCK(&bramka);
-    MUTEX_LOCK(&mutex_czytelnia);
-    MUTEX_UNLOCK(&bramka);
+    MUTEX_LOCK(
+        &bramka); // Pisarz blokuje bramke, ucinajac strumien nowych czytelnikow
+    MUTEX_LOCK(&mutex_czytelnia); // Pisarz oczekuje na opuszczenie czytelni
+                                  // przez aktualnych czytelnikow
+    MUTEX_UNLOCK(&bramka);        // Zwolnienie bramki po zabezpieczeniu wejscia
 
     zmien_stan(0, -1, 0, 1);
 
+    // Pobyt w czytelni - pisanie
     usleep(500000);
 
     zmien_stan(0, 0, 0, -1);
-    MUTEX_UNLOCK(&mutex_czytelnia);
+    MUTEX_UNLOCK(&mutex_czytelnia); // Zwolnienie wylacznego dostepu do czytelni
   }
   return NULL;
 }
@@ -116,6 +130,7 @@ int main(int argc, char *argv[]) {
     exit(EXIT_FAILURE);
   }
 
+  // Inicjalizacja mutexow realizujacych mechanizm synchronizacji
   PTHREAD_CHECK(pthread_mutex_init(&bramka, NULL));
   PTHREAD_CHECK(pthread_mutex_init(&mutex_aktywni, NULL));
   PTHREAD_CHECK(pthread_mutex_init(&mutex_czytelnia, NULL));
